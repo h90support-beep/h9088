@@ -1,5 +1,5 @@
 /* ================================================================
-   H90 — Security Module v7.0 — MILITARY GRADE
+   H90 — Security Module v7.1 — MILITARY GRADE
    ================================================================
    ✅ 40 طبقة حماية
    ✅ صفر تأثير على الأداء
@@ -15,6 +15,11 @@
    ✅ Encrypted LocalStorage
    ✅ Invisible Watermark (بصري)
    ✅ Self-Destruct ذكي
+   ----------------------------------------------------------------
+   🔧 v7.1:
+   ✅ إصلاح: يقبل Debug APK (من GitHub Actions)
+   ✅ إصلاح: التوقيع اختياري في وضع Debug
+   ✅ إصلاح: لا يوقف التطبيق بسبب التوقيع
    ================================================================ */
 
 (function() {
@@ -27,7 +32,7 @@
     sha1:      '4140C8319C3B0ED361245373EBD33BA106081B5A',
     sha256:    '5ED5B3494642FA161605D623D71706798122CF038BEE104F1762D31306DC5EBB',
     pkg:       'com.h90.app',
-    version:   '7.0',
+    version:   '7.1',
     owner:     'H90 Entertainment'
   };
 
@@ -47,22 +52,35 @@
     try { return localStorage.getItem('H90_DEV_MODE') === 'true'; } catch (e) { return false; }
   }
 
+  function isDebugBuild() {
+    try {
+      /* Debug APK من GitHub Actions */
+      if (location.protocol === 'file:') return true;
+      if (window.__H90_DEBUG_BUILD__ === true) return true;
+
+      /* إذا الـ package يحتوي على "debug" */
+      if (window.Android && typeof window.Android.getBuildType === 'function') {
+        var buildType = window.Android.getBuildType();
+        if (buildType === 'debug') return true;
+      }
+    } catch (e) {}
+    return false;
+  }
+
   function isPreview() {
-    return !isNative() || isDevMode();
+    return !isNative() || isDevMode() || isDebugBuild();
   }
 
   /* ═══════════════════════════════════════════════════════════
-     2. التشفير المتقدم — AES-256-GCM + KEK/DEK + ChaCha20
+     2. التشفير المتقدم — AES-256-GCM + KEK/DEK
      ═══════════════════════════════════════════════════════════ */
   var Crypto = (function() {
-    var _masterKey = null;      /* KEK — مفتاح التشفير الرئيسي */
-    var _dataKey = null;        /* DEK — مفتاح البيانات */
+    var _masterKey = null;
+    var _dataKey = null;
     var _keyPromise = null;
     var _salt = 'h90_aes_v7_military_2026_x9';
     var _iterations = 250000;
-    var _chunkSize = 1024 * 1024; /* 1MB */
 
-    /* ─── Device ID ─── */
     function getDeviceId() {
       try {
         var id = localStorage.getItem('h90_device_id');
@@ -80,7 +98,6 @@
       }
     }
 
-    /* ─── Master Secret ─── */
     function getMasterSecret() {
       try {
         if (window.Android && typeof window.Android.getMasterSecret === 'function') {
@@ -97,7 +114,6 @@
       return _SIG.sha256 + '|' + _SIG.pkg + '|fallback_v7';
     }
 
-    /* ─── KEK: مفتاح التشفير الرئيسي ─── */
     async function deriveMasterKey() {
       if (_masterKey) return _masterKey;
       if (_keyPromise) return _keyPromise;
@@ -133,7 +149,6 @@
       return _keyPromise;
     }
 
-    /* ─── DEK: مفتاح البيانات (Wrapped) ─── */
     async function getDataKey() {
       if (_dataKey) return _dataKey;
 
@@ -151,7 +166,6 @@
         } catch (e) {}
       }
 
-      /* أنشئ مفتاح جديد */
       var newKey = await crypto.subtle.generateKey(
         { name: 'AES-GCM', length: 256 },
         true,
@@ -198,7 +212,6 @@
       } catch (e) { return null; }
     }
 
-    /* ─── Encrypt/Decrypt ─── */
     async function encrypt(plaintext) {
       try {
         if (!plaintext) return null;
@@ -238,7 +251,6 @@
       } catch (e) { return null; }
     }
 
-    /* ─── HMAC ─── */
     async function hmac(data) {
       try {
         var enc = new TextEncoder();
@@ -251,7 +263,6 @@
       } catch (e) { return null; }
     }
 
-    /* ─── Password Hash ─── */
     async function hashPassword(password, salt) {
       try {
         var enc = new TextEncoder();
@@ -268,14 +279,12 @@
       } catch (e) { return null; }
     }
 
-    /* ─── Nonce ─── */
     function generateNonce() {
       var arr = new Uint8Array(32);
       crypto.getRandomValues(arr);
       return Array.from(arr).map(function(b) { return b.toString(16).padStart(2, '0'); }).join('');
     }
 
-    /* ─── SHA-256 ─── */
     async function sha256(data) {
       try {
         var enc = new TextEncoder();
@@ -285,7 +294,6 @@
       } catch (e) { return null; }
     }
 
-    /* ─── Helpers ─── */
     function ab2b64(buffer) {
       var bytes = new Uint8Array(buffer);
       var binary = '';
@@ -322,7 +330,7 @@
   })();
 
   /* ═══════════════════════════════════════════════════════════
-     3. SecureDB — IndexedDB مشفّر بقطع 1MB
+     3. SecureDB
      ═══════════════════════════════════════════════════════════ */
   var SecureDB = (function() {
     var DB_NAME = 'H90SecureDB_v7';
@@ -504,26 +512,45 @@
     function isVerifiedSync() {
       try {
         if (window.Android && typeof window.Android.isVerified === 'function') {
-          return window.Android.isVerified() === true;
+          var result = window.Android.isVerified();
+          if (result === true) return true;
+
+          /* ✅ v7.1: نقبل Debug APK */
+          if (isDebugBuild()) {
+            console.log('%c[H90 Security] Debug APK — signature check skipped',
+              'color:#ffb300;font-weight:800;');
+            return true;
+          }
+
+          return false;
         }
       } catch (e) {}
+      /* في المتصفح: نقبل دائماً */
       return !isNative() || isDevMode();
     }
 
     async function verifyAsync() {
       try {
         if (window.Android && typeof window.Android.verifySignature === 'function') {
-          return window.Android.verifySignature() === true;
+          var result = window.Android.verifySignature() === true;
+          if (result) return true;
+
+          /* ✅ v7.1: نقبل Debug APK */
+          if (isDebugBuild()) return true;
+
+          return false;
         }
         if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.H90Security) {
           if (window.Capacitor.Plugins.H90Security.verify) {
             var r = await window.Capacitor.Plugins.H90Security.verify();
-            return r && r.valid === true;
+            if (r && r.valid === true) return true;
+            if (isDebugBuild()) return true;
+            return false;
           }
         }
         if (!isNative()) return true;
-        return false;
-      } catch (e) { return false; }
+        return isDebugBuild();
+      } catch (e) { return isDebugBuild(); }
     }
 
     return {
@@ -549,7 +576,7 @@
   })();
 
   /* ═══════════════════════════════════════════════════════════
-     6. Behavioral Analysis (AI)
+     6. Behavioral Analysis
      ═══════════════════════════════════════════════════════════ */
   var BehaviorAI = (function() {
     var _data = {
@@ -557,7 +584,6 @@
       typing: [],
       navigation: [],
       timings: [],
-      touchPoints: [],
       sessionStart: Date.now(),
       totalActions: 0,
       suspiciousScore: 0
@@ -609,12 +635,10 @@
       _samples.clickVariance = variance;
       _samples.clickCount = _data.clicks.length;
 
-      /* كشف النقاط الآلية — فترات ثابتة جداً */
       if (variance < 50 && _data.clicks.length > 20) {
         _data.suspiciousScore += 10;
       }
 
-      /* كشف السرعة غير الطبيعية */
       if (avg < 30 && _data.clicks.length > 20) {
         _data.suspiciousScore += 5;
       }
@@ -642,7 +666,6 @@
       _data.sessionStart = Date.now();
     }
 
-    /* Install global tracking (passive — zero impact) */
     function install() {
       try {
         document.addEventListener('click', function(e) {
@@ -668,59 +691,28 @@
   var AISecurityScore = (function() {
     var _cache = null;
     var _cacheTs = 0;
-    var _CACHE_TTL = 30000; /* 30 ثانية */
+    var _CACHE_TTL = 30000;
 
     async function calculate() {
       if (_cache && Date.now() - _cacheTs < _CACHE_TTL) return _cache;
 
       var signals = {};
 
-      /* 1. التوقيع */
       signals.signature = NativeBridge.isVerifiedSync() ? 1 : 0;
-
-      /* 2. الروت */
       signals.noRoot = !NativeBridge.isRooted() ? 1 : 0;
-
-      /* 3. Frida */
       signals.noFrida = !NativeBridge.isFridaDetected() ? 1 : 0;
-
-      /* 4. Xposed */
       signals.noXposed = !NativeBridge.isXposedDetected() ? 1 : 0;
-
-      /* 5. Emulator */
       signals.noEmulator = !NativeBridge.isEmulator() ? 1 : 0;
-
-      /* 6. VPN */
       signals.noVPN = !NativeBridge.isVPNConnected() ? 1 : 0;
-
-      /* 7. Proxy */
       signals.noProxy = !NativeBridge.isProxyEnabled() ? 1 : 0;
-
-      /* 8. Screen Recording */
       signals.noRecording = !NativeBridge.isScreenRecording() ? 1 : 0;
-
-      /* 9. Console */
       signals.noConsole = !Detectors.console() ? 1 : 0;
-
-      /* 10. DevTools */
       signals.noDevTools = !Detectors.devtools() ? 1 : 0;
-
-      /* 11. Extensions */
       signals.noExtensions = !Detectors.extensions() ? 1 : 0;
-
-      /* 12. Debugger (Timing) */
       signals.noDebugger = !Detectors.timing() ? 1 : 0;
-
-      /* 13. Function Integrity */
       signals.noFuncTamper = !Detectors.functionTamper() ? 1 : 0;
-
-      /* 14. Environment */
       signals.noEnvTamper = !Detectors.environment() ? 1 : 0;
-
-      /* 15. Behavior */
       signals.normalBehavior = BehaviorAI.getScore() < 30 ? 1 : 0;
-
-      /* 16. Session */
       signals.sessionValid = Detectors.session() ? 1 : 0;
 
       var keys = Object.keys(signals);
@@ -732,6 +724,12 @@
       else if (score >= 70) { level = 'warning'; action = 'monitor'; }
       else if (score >= 50) { level = 'risky'; action = 'restrict'; }
       else { level = 'dangerous'; action = 'terminate'; }
+
+      /* ✅ v7.1: في Debug APK لا نوقف التطبيق */
+      if (isDebugBuild() && action === 'terminate') {
+        action = 'continue';
+        level = 'safe';
+      }
 
       _cache = {
         score: score,
@@ -752,13 +750,11 @@
   })();
 
   /* ═══════════════════════════════════════════════════════════
-     8. Detectors — كاشفات متقدمة
+     8. Detectors
      ═══════════════════════════════════════════════════════════ */
   var Detectors = (function() {
-    var _originalFunctions = {};
     var _consoleCleared = false;
 
-    /* ─── Console Detection ─── */
     function console_() {
       try {
         var start = performance.now();
@@ -775,18 +771,15 @@
       } catch (e) { return false; }
     }
 
-    /* ─── DevTools Detection (Multiple Methods) ─── */
     function devtools() {
       if (isPreview()) return false;
 
-      /* 1. Size-based */
       try {
         var widthDiff = window.outerWidth - window.innerWidth;
         var heightDiff = window.outerHeight - window.innerHeight;
         if (widthDiff > 200 || heightDiff > 200) return true;
       } catch (e) {}
 
-      /* 2. Debugger-based */
       try {
         var start = performance.now();
         debugger;
@@ -796,21 +789,6 @@
       return false;
     }
 
-    /* ─── Console Detection (Alternative) ─── */
-    function consoleDetection() {
-      try {
-        var el = document.createElement('div');
-        var fired = false;
-        Object.defineProperty(el, 'id', {
-          get: function() { fired = true; return 'x'; }
-        });
-        console.log(el);
-        console.clear && console.clear();
-        return fired;
-      } catch (e) { return false; }
-    }
-
-    /* ─── Extensions Detection ─── */
     function extensions() {
       try {
         if (typeof window.unsafeWindow !== 'undefined') return true;
@@ -823,7 +801,6 @@
       return false;
     }
 
-    /* ─── Timing-based Debugger Detection ─── */
     function timing() {
       if (isPreview()) return false;
       try {
@@ -834,7 +811,6 @@
       } catch (e) { return false; }
     }
 
-    /* ─── Function Tampering Detection ─── */
     function functionTamper() {
       try {
         var checks = [
@@ -854,18 +830,13 @@
       return false;
     }
 
-    /* ─── Environment Tampering ─── */
     function environment() {
       try {
-        /* فحص Navigator */
         if (!navigator.userAgent) return true;
         if (!navigator.language) return true;
         if (typeof navigator.language !== 'string') return true;
-
-        /* فحص Window */
         if (window.self !== window.top) return true;
 
-        /* فحص toString */
         if (window.toString.toString().indexOf('[native code]') === -1) {
           if (window.toString.toString().length < 100) return true;
         }
@@ -873,7 +844,6 @@
       return false;
     }
 
-    /* ─── Session Detection ─── */
     function session() {
       try {
         var fp = SessionFingerprint.get();
@@ -881,14 +851,13 @@
         if (stored) {
           var storedObj = JSON.parse(stored);
           var score = SessionFingerprint.compare(fp, storedObj);
-          return score > 0.8; /* 80% تشابه مطلوب */
+          return score > 0.8;
         }
         localStorage.setItem('h90_session_fp', JSON.stringify(fp));
         return true;
       } catch (e) { return true; }
     }
 
-    /* ─── Frida Detection (Web) ─── */
     function frida() {
       try {
         if (window.frida) return true;
@@ -905,7 +874,6 @@
     return {
       console: console_,
       devtools: devtools,
-      consoleDetection: consoleDetection,
       extensions: extensions,
       timing: timing,
       functionTamper: functionTamper,
@@ -954,7 +922,7 @@
   })();
 
   /* ═══════════════════════════════════════════════════════════
-     10. Network Security (HMAC + Nonce)
+     10. Network Security
      ═══════════════════════════════════════════════════════════ */
   var NetworkSecurity = (function() {
     var _nonceHistory = [];
@@ -966,7 +934,6 @@
         var timestamp = Date.now();
         var data = JSON.stringify(payload);
 
-        /* احتفظ بالـ nonce */
         _nonceHistory.push(nonce);
         if (_nonceHistory.length > _MAX_HISTORY) _nonceHistory.shift();
 
@@ -1029,7 +996,7 @@
   })();
 
   /* ═══════════════════════════════════════════════════════════
-     12. Code Integrity — Self-Checksum
+     12. Code Integrity
      ═══════════════════════════════════════════════════════════ */
   var CodeIntegrity = (function() {
     var _verified = false;
@@ -1054,11 +1021,8 @@
         Object.keys(_functions).forEach(function(name) {
           var info = _functions[name];
           if (!info) return;
-
-          /* فحص أن الدالة لم تتغير */
           var currentStr = info.fn ? info.fn.toString() : null;
           if (!currentStr) return;
-
           if (currentStr.indexOf('native code') === -1 && currentStr !== info.str) {
             tampered.push(name);
           }
@@ -1091,7 +1055,6 @@
       if (_installed) return;
       _installed = true;
 
-      /* إضافة watermark خفي عبر CSS pseudo-element */
       try {
         var style = document.createElement('style');
         var deviceId = Crypto.getDeviceId();
@@ -1119,12 +1082,11 @@
   })();
 
   /* ═══════════════════════════════════════════════════════════
-     14. Screen Recording Prevention
+     14. Screen Protection
      ═══════════════════════════════════════════════════════════ */
   var ScreenProtection = (function() {
     function enable() {
       try {
-        /* Native flag */
         if (window.Android && typeof window.Android.setSecureFlag === 'function') {
           window.Android.setSecureFlag(true);
         }
@@ -1134,7 +1096,6 @@
           }
         }
 
-        /* Visibility API — إيقاف الفيديو عند فقدان التركيز */
         document.addEventListener('visibilitychange', function() {
           if (document.hidden) {
             var videos = document.querySelectorAll('video');
@@ -1161,7 +1122,7 @@
   })();
 
   /* ═══════════════════════════════════════════════════════════
-     15. Checks — الفحوصات
+     15. Checks
      ═══════════════════════════════════════════════════════════ */
   var Checks = {
     signature: function() {
@@ -1223,12 +1184,19 @@
   };
 
   /* ═══════════════════════════════════════════════════════════
-     16. شاشة الإنهاء
+     16. Termination Screen
      ═══════════════════════════════════════════════════════════ */
   var _terminated = false;
 
   function terminate(reason, details) {
     if (_terminated) return;
+
+    /* ✅ v7.1: في Debug APK لا نوقف التطبيق */
+    if (isDebugBuild()) {
+      console.warn('[H90 Security] Debug APK — Skipping termination:', reason);
+      return;
+    }
+
     _terminated = true;
 
     console.error('[SECURITY] Termination:', reason, details || '');
@@ -1273,7 +1241,7 @@
           '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);padding:14px 20px;border-radius:14px;max-width:340px;">' +
             '<div style="font-size:13px;color:rgba(255,255,255,0.85);line-height:1.7;">' + hint + '</div>' +
           '</div>' +
-          '<div style="font-size:11px;color:rgba(255,255,255,0.4);margin-top:20px;">H90 SECURITY v7.0 · ' + reason + '</div>' +
+          '<div style="font-size:11px;color:rgba(255,255,255,0.4);margin-top:20px;">H90 SECURITY v7.1 · ' + reason + '</div>' +
         '</div>';
 
       document.addEventListener('click', function(e) { e.preventDefault(); }, true);
@@ -1287,18 +1255,27 @@
   }
 
   /* ═══════════════════════════════════════════════════════════
-     17. التهيئة
+     17. Initialization
      ═══════════════════════════════════════════════════════════ */
   async function init() {
-    console.log('%c🛡️ H90 Security v7.0 — MILITARY GRADE', 'background:linear-gradient(135deg,#e53935,#000);color:#fff;padding:6px 16px;border-radius:8px;font-weight:900;');
+    console.log('%c🛡️ H90 Security v7.1 — MILITARY GRADE',
+      'background:linear-gradient(135deg,#e53935,#000);color:#fff;padding:6px 16px;border-radius:8px;font-weight:900;');
 
-    if (isPreview()) {
-      console.log('%c🔧 DEV MODE — Security limited for preview', 'background:#ffb300;color:#000;padding:4px 12px;border-radius:6px;font-weight:900;');
+    /* ✅ v7.1: في Debug APK → لا فحوصات */
+    if (isDebugBuild()) {
+      console.log('%c🔧 [H90 Security] Debug build — running in relaxed mode',
+        'background:#ffb300;color:#000;padding:4px 12px;border-radius:6px;font-weight:900;');
       installPassiveFeatures();
       return;
     }
 
-    /* الفحوصات الأولية */
+    if (isPreview()) {
+      console.log('%c🔧 [H90 Security] Dev/Preview mode',
+        'background:#ffb300;color:#000;padding:4px 12px;border-radius:6px;font-weight:900;');
+      installPassiveFeatures();
+      return;
+    }
+
     var sig = Checks.signature();
     if (!sig.valid) { terminate('signature_invalid', sig); return; }
 
@@ -1317,17 +1294,14 @@
     var ext = Checks.extensions();
     if (ext.detected) { terminate('extension_detected', ext); return; }
 
-    /* فحوصات إضافية */
     var fridaWeb = Checks.fridaWeb();
     if (fridaWeb.detected) { terminate('frida_web_detected', fridaWeb); return; }
 
     var funcTamper = Checks.functionTamper();
     if (funcTamper.detected) { terminate('function_tampered', funcTamper); return; }
 
-    /* تفعيل الحمايات السلبية */
     installPassiveFeatures();
 
-    /* فحوصات دورية — خفيفة جداً */
     setInterval(function() {
       if (_terminated) return;
 
@@ -1353,7 +1327,6 @@
       if (fw.detected) return terminate('frida_web_detected');
     }, 5000);
 
-    /* حساب AI Score */
     setTimeout(async function() {
       try {
         var score = await AISecurityScore.calculate();
@@ -1368,26 +1341,20 @@
       } catch (e) {}
     }, 3000);
 
-    console.log('%c✅ H90 Security v7.0 ACTIVE', 'background:#00e676;color:#000;padding:4px 12px;border-radius:6px;font-weight:900;');
+    console.log('%c✅ H90 Security v7.1 ACTIVE', 'background:#00e676;color:#000;padding:4px 12px;border-radius:6px;font-weight:900;');
   }
 
   /* ═══════════════════════════════════════════════════════════
-     18. التفعيل السلبي — صفر تأثير
+     18. Passive Features
      ═══════════════════════════════════════════════════════════ */
   function installPassiveFeatures() {
     try { BehaviorAI.install(); } catch (e) {}
     try { Watermark.install(); } catch (e) {}
     try { ScreenProtection.enable(); } catch (e) {}
-
-    /* حماية ضد التلاعب بالنقر */
-    try {
-      var _origAddEventListener = EventTarget.prototype.addEventListener;
-      /* لا نُعدّل شيئاً — فقط نتتبع */
-    } catch (e) {}
   }
 
   /* ═══════════════════════════════════════════════════════════
-     19. API عام
+     19. Public API
      ═══════════════════════════════════════════════════════════ */
   window.__H90_SEC__ = {
     version: _SIG.version,
@@ -1418,9 +1385,9 @@
     isNative: isNative,
     isPreview: isPreview,
     isDevMode: isDevMode,
+    isDebugBuild: isDebugBuild,
     terminate: terminate,
 
-    /* حالة شاملة */
     status: async function() {
       var score = await AISecurityScore.calculate();
       return {
@@ -1428,6 +1395,7 @@
         isNative: isNative(),
         isPreview: isPreview(),
         isDevMode: isDevMode(),
+        isDebugBuild: isDebugBuild(),
         cryptoReady: Crypto.isReady(),
         terminated: _terminated,
         aiScore: score.score,
@@ -1437,7 +1405,6 @@
       };
     },
 
-    /* اختبار شامل */
     test: async function() {
       var results = {};
       try {
@@ -1459,16 +1426,15 @@
           return t === d;
         })();
         results.aiScore = await AISecurityScore.calculate();
+        results.isDebugBuild = isDebugBuild();
       } catch (e) { results.error = e.message; }
       return results;
     },
 
-    /* تحقق سريع من الشبكة */
     verifyNetwork: function(url) {
       return CertPinning.validate(url);
     },
 
-    /* توقيع الطلبات */
     signRequest: function(payload) {
       return NetworkSecurity.sign(payload);
     }
@@ -1480,7 +1446,6 @@
   window.H90Behavior = BehaviorAI;
   window.H90Signature = window.__H90_SEC__.Signature;
 
-  /* بدء التهيئة */
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);
   } else {
