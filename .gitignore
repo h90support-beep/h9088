@@ -1,13 +1,18 @@
+# Node
 node_modules/
 npm-debug.log*
-android/.gradle/
-android/build/
+
+# Build outputs
 android/app/build/
+android/build/
+android/.gradle/
 android/local.properties
 *.apk
 *.aab
 *.keystore
 *.jks
+
+# IDE
 .vscode/
 .idea/
 .DS_Store
